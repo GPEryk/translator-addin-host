@@ -106,6 +106,7 @@
     { "en": "slicer", "de": "Aufschnittmaschine" },
     { "en": "snap-in gasket", "pl": "uszczelka wciskana" },
     { "en": "solenoid valve", "pl": "elektrozawór", "de": "Magnetventil", "fr": "électrovanne", "es": "electroválvula", "it": "elettrovalvola" },
+    { "en": "spring", "pl": "sprężyna" },
     { "en": "steam generator", "de": "Dampfgenerator", "pl": "generator pary" },
     { "en": "Support", "pl": "wspornik" },
     { "en": "support", "pl": "wspornik" },
@@ -232,6 +233,7 @@
     { "pl": "zawór gazowy", "en": "gas tap" },
     { "pl": "zestaw", "en": "set" },
     { "pl": "zębatka", "en": "pinion" },
-    { "pl": "złączka", "en": "nipple" }
+    { "pl": "złączka", "en": "nipple" },
+    { "pl": "sprężyna", "en": "spring" }
   ]
 }
