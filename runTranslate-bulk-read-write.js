@@ -7,8 +7,10 @@
  */
 const MAX_ROWS_PER_SYNC = 1000;   // Excel Online ~5MB limit na request; chunk po wierszach
 const MAX_CELLS_PER_SYNC = 250;   // Maks. komórek na jeden ctx.sync() przy odczycie – małe partie, żeby uniknąć 500
-const RECORDS_PER_BATCH = 10;     // Tłumaczymy paczkami po 10 i od razu zapisujemy do Excela (na bieżąco), bez jednego wielkiego zapisu na końcu
+const RECORDS_PER_BATCH = 10;     // Tłumaczymy paczkami po 10 i od razu zapisujemy do Excela (na bieżąco)
 const API_DELAY_MS = 400;         // Opóźnienie między requestami (mniej 429)
+const RETRY_DELAY_MS = 800;       // Pauza przed ponowną próbą po błędzie 500 (odczyt)
+const API_429_RETRY_DELAY_MS = 3000; // Czekaj 3 s i ponów przy 429 (rate limit OpenAI)
 
 async function runTranslate() {
   const apiKey = getApiKey();
@@ -37,6 +39,11 @@ async function runTranslate() {
     const columnCount = sel.columnCount;
     const rowIndex = sel.rowIndex;
     const columnIndex = sel.columnIndex;
+
+    const totalCells = rowCount * columnCount;
+    if (totalCells > 3000) {
+      log(`⚠️ Duże zaznaczenie (${totalCells} komórek). Przy błędach spróbuj mniejszego zakresu.`);
+    }
 
     // Nagłówek tylko dla zaznaczonych kolumn (bez getUsedRange – przy dużym arkuszu unikamy 500)
     const headerRange = sheet.getRangeByIndexes(HEADER_ROW - 1, columnIndex, 1, columnCount);
@@ -84,7 +91,8 @@ async function runTranslate() {
         } catch (e) {
           if (chunkRows > 1 && is500(e)) {
             chunkRows = Math.max(1, Math.floor(chunkRows / 2));
-            log(`  Błąd serwera (500) – ponawiam z mniejszą partią (${chunkRows} wierszy)...`);
+            log(`  Błąd serwera (500) – czekam ${RETRY_DELAY_MS / 1000} s, ponawiam z mniejszą partią (${chunkRows} wierszy)...`);
+            await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
           } else throw e;
         }
       }
@@ -137,20 +145,45 @@ async function runTranslate() {
         const { tokenizedLines, tokenMap } =
           applyGlossaryTokens(lines, lang, currentGlossary);
 
-        const translatedLines = await callOpenAI(lang, tokenizedLines, sourceLang);
+        const is429 = (e) => (e && (e.message || "" + e) && /429|rate limit|Too Many Requests/i.test(e.message || "" + e));
+        let translatedLines;
+        try {
+          translatedLines = await callOpenAI(lang, tokenizedLines, sourceLang);
+        } catch (apiErr) {
+          if (is429(apiErr)) {
+            log(`  Limit API (429) – czekam ${API_429_RETRY_DELAY_MS / 1000} s, ponawiam...`);
+            await new Promise(r => setTimeout(r, API_429_RETRY_DELAY_MS));
+            translatedLines = await callOpenAI(lang, tokenizedLines, sourceLang);
+          } else throw apiErr;
+        }
 
         if (API_DELAY_MS > 0) {
           await new Promise(r => setTimeout(r, API_DELAY_MS));
         }
 
-        // Zapis do Excela od razu po tej paczce (po 10 rekordów) – mały sync, bez 500
-        for (let j = 0; j < batch.length; j++) {
-          const restored = restoreGlossaryTokens(translatedLines[j] || "", tokenMap);
-          const it = batch[j];
-          const cellRange = sheet.getRangeByIndexes(it.absRow, it.absCol, 1, 1);
-          cellRange.values = [[restored]];
+        // Zapis do Excela po paczce; przy 500 – ponowna próba po 1 komórce
+        const writeBatch = () => {
+          for (let j = 0; j < batch.length; j++) {
+            const restored = restoreGlossaryTokens(translatedLines[j] || "", tokenMap);
+            const it = batch[j];
+            const cellRange = sheet.getRangeByIndexes(it.absRow, it.absCol, 1, 1);
+            cellRange.values = [[restored]];
+          }
+        };
+        try {
+          writeBatch();
+          await ctx.sync();
+        } catch (writeErr) {
+          if (is500(writeErr) && batch.length > 1) {
+            log(`  Błąd 500 przy zapisie – zapisuję po 1 komórce...`);
+            for (let j = 0; j < batch.length; j++) {
+              const restored = restoreGlossaryTokens(translatedLines[j] || "", tokenMap);
+              const it = batch[j];
+              sheet.getRangeByIndexes(it.absRow, it.absCol, 1, 1).values = [[restored]];
+              await ctx.sync();
+            }
+          } else throw writeErr;
         }
-        await ctx.sync();
 
         done += batch.length;
         setProgress(Math.round((done / total) * 100));
