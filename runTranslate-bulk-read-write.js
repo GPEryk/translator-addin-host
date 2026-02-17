@@ -1,12 +1,14 @@
 /**
  * Zastępstwo funkcji runTranslate() – ta sama logika (zaznaczenie + nagłówki = języki), bez limitów.
  *
- * - Przy zaznaczeniu >250 komórek: odczyt i zapis w partiach (MAX_CELLS_PER_SYNC). Przy błędzie 500 – automatyczna ponowna próba z mniejszą partią.
- * - API_DELAY_MS: opóźnienie po każdym request do OpenAI, żeby przy dużej liczbie zapytań nie wpaść na 429 (rate limit).
+ * - Odczyt zaznaczenia w małych partiach (MAX_CELLS_PER_SYNC), żeby uniknąć 500. Przy błędzie 500 – retry z mniejszą partią.
+ * - Tłumaczenie w paczkach po RECORDS_PER_BATCH (10): po każdej paczce od razu zapis do Excela (na bieżąco), bez jednego wielkiego zapisu na końcu.
+ * - API_DELAY_MS: opóźnienie między requestami do OpenAI (mniej 429).
  */
 const MAX_ROWS_PER_SYNC = 1000;   // Excel Online ~5MB limit na request; chunk po wierszach
-const MAX_CELLS_PER_SYNC = 250;   // Maks. komórek na jeden ctx.sync() – Excel Online często zwraca 500 przy większym; przy >250 partie krok po kroku
-const API_DELAY_MS = 400;        // Opóźnienie między requestami (mniej 429); zwiększ przy dużej liczbie języków/komórek
+const MAX_CELLS_PER_SYNC = 250;   // Maks. komórek na jeden ctx.sync() przy odczycie – małe partie, żeby uniknąć 500
+const RECORDS_PER_BATCH = 10;     // Tłumaczymy paczkami po 10 i od razu zapisujemy do Excela (na bieżąco), bez jednego wielkiego zapisu na końcu
+const API_DELAY_MS = 400;         // Opóźnienie między requestami (mniej 429)
 
 async function runTranslate() {
   const apiKey = getApiKey();
@@ -120,60 +122,40 @@ async function runTranslate() {
       return;
     }
 
-    // Siatka wynikowa – kopia aktualnych values zaznaczenia (żeby nie nadpisać komórek, których nie tłumaczymy)
-    const resultGrid = selValues.map(row => row ? row.slice() : []);
-
+    // Tłumaczenie w małych paczkach (RECORDS_PER_BATCH) i zapis do Excela co paczkę – na bieżąco, bez wielkiego zapisu na końcu
     let done = 0;
+    const batchSize = RECORDS_PER_BATCH;
 
     for (const [lang, arr] of groups.entries()) {
       if (!lang) continue;
-      log(`${sourceLang} → ${lang}: ${arr.length} rekordów`);
+      log(`${sourceLang} → ${lang}: ${arr.length} rekordów (zapis co ${batchSize})`);
 
-      for (let i = 0; i < arr.length; i += BATCH_SIZE) {
-        const batch = arr.slice(i, i + BATCH_SIZE);
+      for (let i = 0; i < arr.length; i += batchSize) {
+        const batch = arr.slice(i, i + batchSize);
         const lines = batch.map(x => x.src);
 
         const { tokenizedLines, tokenMap } =
           applyGlossaryTokens(lines, lang, currentGlossary);
 
-        log(`  batch ${Math.floor(i / BATCH_SIZE) + 1}: wysyłam ${lines.length} linii`);
         const translatedLines = await callOpenAI(lang, tokenizedLines, sourceLang);
 
         if (API_DELAY_MS > 0) {
           await new Promise(r => setTimeout(r, API_DELAY_MS));
         }
 
+        // Zapis do Excela od razu po tej paczce (po 10 rekordów) – mały sync, bez 500
         for (let j = 0; j < batch.length; j++) {
           const restored = restoreGlossaryTokens(translatedLines[j] || "", tokenMap);
           const it = batch[j];
-          if (resultGrid[it.r]) resultGrid[it.r][it.c] = restored;
+          const cellRange = sheet.getRangeByIndexes(it.absRow, it.absCol, 1, 1);
+          cellRange.values = [[restored]];
         }
+        await ctx.sync();
 
         done += batch.length;
         setProgress(Math.round((done / total) * 100));
-      }
-    }
-
-    // ----- BULK WRITE w partiach + przy 500 ponowna próba z mniejszą partią -----
-    let writeOffset = 0, writeChunkNum = 0;
-    while (writeOffset < rowCount) {
-      let chunkRows = Math.min(maxRowsPerChunk, rowCount - writeOffset);
-      let done = false;
-      while (!done && chunkRows >= 1) {
-        try {
-          if (totalChunks > 1) log(`  Zapisuję partię ${writeChunkNum + 1}...`);
-          const chunkData = resultGrid.slice(writeOffset, writeOffset + chunkRows);
-          const outRange = sheet.getRangeByIndexes(rowIndex + writeOffset, columnIndex, chunkRows, columnCount);
-          outRange.values = chunkData;
-          await ctx.sync();
-          writeOffset += chunkRows;
-          writeChunkNum++;
-          done = true;
-        } catch (e) {
-          if (chunkRows > 1 && is500(e)) {
-            chunkRows = Math.max(1, Math.floor(chunkRows / 2));
-            log(`  Błąd serwera (500) przy zapisie – ponawiam z mniejszą partią (${chunkRows} wierszy)...`);
-          } else throw e;
+        if (done % 50 === 0 || done === total) {
+          log(`  Zapisano ${done}/${total}`);
         }
       }
     }
