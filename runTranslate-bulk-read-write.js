@@ -1,13 +1,11 @@
 /**
- * Zastępstwo funkcji runTranslate() – odczyt i zapis BULK (bez getCell w pętli).
- * Użycie: w pliku źródłowym taskpane (np. src/taskpane/taskpane.js)
- * zastąp całą funkcję runTranslate poniższą implementacją, potem zbuduj projekt.
+ * Zastępstwo funkcji runTranslate() – ta sama logika (zaznaczenie + nagłówki = języki), bez limitów.
  *
- * Zmiany:
- * - Odczyt: jedno sel.load("values") + jeden zakres kolumny źródłowej + jeden ctx.sync().
- * - Items budowane z tablic w pamięci (bez srcCell/tgtCell).
- * - Zapis: jedna siatka resultGrid, na końcu jeden zapis zakresu.
+ * - Odczyt/zapis w chunkach po MAX_ROWS_PER_SYNC (limit ~5MB Excel Online – żeby nie było "Rozmiar ładunku przekroczył limit").
+ * - API_DELAY_MS: opóźnienie po każdym request do OpenAI, żeby przy dużej liczbie zapytań nie wpaść na 429 (rate limit).
  */
+const MAX_ROWS_PER_SYNC = 1000; // Excel Online ~5MB limit na request; chunk po wierszach
+const API_DELAY_MS = 400;      // Opóźnienie między requestami (mniej 429); zwiększ przy dużej liczbie języków/komórek
 
 async function runTranslate() {
   const apiKey = getApiKey();
@@ -48,18 +46,26 @@ async function runTranslate() {
 
     const currentGlossary = sourceLang === "PL" ? plGlossaryCache : glossaryCache;
 
-    // ----- BULK READ: tylko 2 zakresy zamiast tysięcy getCell -----
-    sel.load("values");
-    const sourceColRange = sheet.getRangeByIndexes(sel.rowIndex, srcCol, sel.rowCount, 1);
-    sourceColRange.load("values");
-    await ctx.sync();
-
-    const selValues = sel.values || [];
-    const sourceColValues = sourceColRange.values || [];
     const rowCount = sel.rowCount;
     const columnCount = sel.columnCount;
     const rowIndex = sel.rowIndex;
     const columnIndex = sel.columnIndex;
+
+    // ----- BULK READ w chunkach (limit ~5MB na request w Excel Online) -----
+    const selValues = [];
+    const sourceColValues = [];
+    for (let rowOffset = 0; rowOffset < rowCount; rowOffset += MAX_ROWS_PER_SYNC) {
+      const chunkRows = Math.min(MAX_ROWS_PER_SYNC, rowCount - rowOffset);
+      const chunkSel = sheet.getRangeByIndexes(rowIndex + rowOffset, columnIndex, chunkRows, columnCount);
+      const chunkSrc = sheet.getRangeByIndexes(rowIndex + rowOffset, srcCol, chunkRows, 1);
+      chunkSel.load("values");
+      chunkSrc.load("values");
+      await ctx.sync();
+      const cv = chunkSel.values || [];
+      const sv = chunkSrc.values || [];
+      for (let i = 0; i < cv.length; i++) selValues.push(cv[i] ? cv[i].slice() : []);
+      for (let i = 0; i < sv.length; i++) sourceColValues.push(sv[i] ? sv[i].slice() : []);
+    }
 
     const items = [];
     for (let r = 0; r < rowCount; r++) {
@@ -112,6 +118,10 @@ async function runTranslate() {
         log(`  batch ${Math.floor(i / BATCH_SIZE) + 1}: wysyłam ${lines.length} linii`);
         const translatedLines = await callOpenAI(lang, tokenizedLines, sourceLang);
 
+        if (API_DELAY_MS > 0) {
+          await new Promise(r => setTimeout(r, API_DELAY_MS));
+        }
+
         for (let j = 0; j < batch.length; j++) {
           const restored = restoreGlossaryTokens(translatedLines[j] || "", tokenMap);
           const it = batch[j];
@@ -123,10 +133,14 @@ async function runTranslate() {
       }
     }
 
-    // ----- BULK WRITE: jeden zapis całego zaznaczenia -----
-    const outRange = sheet.getRangeByIndexes(rowIndex, columnIndex, rowCount, columnCount);
-    outRange.values = resultGrid;
-    await ctx.sync();
+    // ----- BULK WRITE w chunkach (limit ~5MB na request w Excel Online) -----
+    for (let rowOffset = 0; rowOffset < rowCount; rowOffset += MAX_ROWS_PER_SYNC) {
+      const chunkRows = Math.min(MAX_ROWS_PER_SYNC, rowCount - rowOffset);
+      const chunkData = resultGrid.slice(rowOffset, rowOffset + chunkRows);
+      const outRange = sheet.getRangeByIndexes(rowIndex + rowOffset, columnIndex, chunkRows, columnCount);
+      outRange.values = chunkData;
+      await ctx.sync();
+    }
 
     setProgress(null);
     log("Gotowe.");

@@ -45,11 +45,15 @@ Czyli: **limit wynika z Excel API i z tego, że obecna wersja wtyczki ładuje ka
    - Po przetłumaczeniu każdego batchu uzupełniać odpowiednie pola w tej siatce.
    - Na końcu **jednym** `range.values = resultGrid` i jednym `ctx.sync()` zapisać całe zaznaczenie.
 
+Dodatkowo w **Excel Online** obowiązuje **limit ~5 MB na rozmiar jednego żądania** (request payload). Przekroczenie daje błąd: *„Rozmiar ładunku żądania przekroczył limit”* (RichApi.Error). Dlatego w pliku `runTranslate-bulk-read-write.js` odczyt i zapis są **podzielone na bloki** po `MAX_ROWS_PER_SYNC` wierszy (np. 1000) – każdy blok to osobny `ctx.sync()`, więc żaden request nie przekracza limitu.
+
 Dzięki temu:
 
-- **Odczyt** nie rośnie liniowo z liczbą komórek (2 zakresy zamiast tysięcy),
-- **Zapis** to jedna operacja na cały zakres,
-- Ograniczeniem stają się głównie **limit API OpenAI** (batche po 80) i **rozsądne limity Excel API na rozmiar jednego zakresu** (np. 5k–20k wierszy w jednym bloku), a nie „max 255 rekordów” czy „max 5000 komórek” w samej wtyczce.
+- **Odczyt** nie rośnie liniowo z liczbą komórek (bulk w chunkach zamiast tysięcy getCell),
+- **Zapis** to wiele małych zapisów po 1000 wierszy zamiast jednego gigantycznego,
+- Ograniczeniem stają się **limit API OpenAI** (batche po 80) i **limit ~5 MB na request w Excel Online** (stąd chunkowanie), a nie „max 255 rekordów” w samej wtyczce.
+
+**Rate limit OpenAI (429):** Przy bardzo dużej liczbie requestów (np. 5k tłumaczeń = dziesiątki batchy) OpenAI może zwrócić 429 (Too Many Requests). W pliku `runTranslate-bulk-read-write.js` jest stała `API_DELAY_MS` (np. 400 ms) – po każdym wywołaniu API wstawiane jest opóźnienie, żeby requesty nie zatrzymywały się na 429. Możesz zwiększyć (np. 600–800 ms), jeśli nadal pojawiają się błędy 429. W kodzie źródłowym w `callOpenAI` warto przy statusie 429 zwiększyć czas oczekiwania przed retry (np. 60 s zamiast 2 s).
 
 ## Gdzie to wstawić w kodzie
 
