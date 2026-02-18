@@ -157,14 +157,53 @@ async function runTranslate() {
           } else throw apiErr;
         }
 
+        // Upewnij się, że mamy tablicę o długości batch (API czasem zwraca jeden string lub mniej linii)
+        if (typeof translatedLines === "string") {
+          translatedLines = translatedLines.split(/\r?\n/).map(s => s.trim()).filter((_, idx) => idx < batch.length);
+        }
+        if (!Array.isArray(translatedLines)) translatedLines = [];
+        while (translatedLines.length < batch.length) translatedLines.push("");
+        translatedLines = translatedLines.slice(0, batch.length);
+
         if (API_DELAY_MS > 0) {
           await new Promise(r => setTimeout(r, API_DELAY_MS));
+        }
+
+        // Zbuduj wynik; brak tłumaczenia lub „to samo co źródło” = ponawiamy do skutku (bez luk)
+        const restoredList = batch.map((it, j) => restoreGlossaryTokens(translatedLines[j] || "", tokenMap));
+        const isValid = (j) => {
+          const res = (restoredList[j] || "").trim();
+          const src = (batch[j].src || "").trim();
+          if (!res) return false;
+          if (lang !== sourceLang && res === src) return false;
+          return true;
+        };
+        const MAX_RETRY_PER_CELL = 5;
+        let needRetry = batch.map((_, j) => j).filter(j => !isValid(j));
+        let round = 0;
+        while (needRetry.length > 0 && round < MAX_RETRY_PER_CELL) {
+          round++;
+          log(`  Uzupełniam brakujące / błędne (${needRetry.length} komórek), próba ${round}...`);
+          for (const j of needRetry) {
+            await new Promise(r => setTimeout(r, 250));
+            try {
+              const oneLine = await callOpenAI(lang, [tokenizedLines[j]], sourceLang);
+              const one = Array.isArray(oneLine) ? (oneLine[0] ?? "") : ("" + (oneLine || "")).trim();
+              restoredList[j] = restoreGlossaryTokens(one || "", tokenMap);
+            } catch (e) {
+              if (round < MAX_RETRY_PER_CELL) log(`  Błąd API dla komórki – ponowię w następnej rundzie.`);
+            }
+          }
+          needRetry = needRetry.filter(j => !isValid(j));
+        }
+        if (needRetry.length > 0) {
+          log(`  Uwaga: ${needRetry.length} komórek nadal niepoprawnych po ${MAX_RETRY_PER_CELL} próbach – zapisuję ostatni wynik.`);
         }
 
         // Zapis do Excela po paczce; przy 500 – ponowna próba po 1 komórce
         const writeBatch = () => {
           for (let j = 0; j < batch.length; j++) {
-            const restored = restoreGlossaryTokens(translatedLines[j] || "", tokenMap);
+            const restored = restoredList[j] ?? "";
             const it = batch[j];
             const cellRange = sheet.getRangeByIndexes(it.absRow, it.absCol, 1, 1);
             cellRange.values = [[restored]];
@@ -177,7 +216,7 @@ async function runTranslate() {
           if (is500(writeErr) && batch.length > 1) {
             log(`  Błąd 500 przy zapisie – zapisuję po 1 komórce...`);
             for (let j = 0; j < batch.length; j++) {
-              const restored = restoreGlossaryTokens(translatedLines[j] || "", tokenMap);
+              const restored = restoredList[j] ?? "";
               const it = batch[j];
               sheet.getRangeByIndexes(it.absRow, it.absCol, 1, 1).values = [[restored]];
               await ctx.sync();
