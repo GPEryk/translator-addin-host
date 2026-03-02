@@ -281,3 +281,31 @@ body{
   transition:width .3s ease;
   box-shadow:0 0 8px rgba(0,113,227,0.4);
 }
+
+/* Logi szczegółowe tłumaczenia */
+.detailed-log-section{
+  margin-top:12px;
+  border-top:1px solid var(--border);
+  padding-top:12px;
+}
+.detailed-log-toggle{
+  font-size:12px;
+  padding:6px 10px;
+  margin-bottom:8px;
+}
+.detailed-log{
+  background:#0e1016;
+  color:#e6edf3;
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:12px;
+  max-height:280px;
+  overflow:auto;
+  font-size:12px;
+  white-space:pre-wrap;
+  font-family:'SF Mono','Menlo','Monaco','Courier New',monospace;
+  line-height:1.5;
+}
+.detailed-log-section .detailed-log{ display:none; }
+.detailed-log-section[data-active="true"] .detailed-log{ display:block; }
+.detailed-log-section[data-active="true"] .detailed-log-toggle{ margin-bottom:8px; }

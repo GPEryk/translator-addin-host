@@ -12,6 +12,58 @@ const API_DELAY_MS = 400;         // Opóźnienie między requestami (mniej 429)
 const RETRY_DELAY_MS = 800;       // Pauza przed ponowną próbą po błędzie 500 (odczyt)
 const API_429_RETRY_DELAY_MS = 3000; // Czekaj 3 s i ponów przy 429 (rate limit OpenAI)
 
+// —— Logi szczegółowe (okienko dokładnych kroków) ——
+function _detailedLogNow() {
+  const d = new Date();
+  return d.toTimeString().slice(0, 12);
+}
+function detailedLog(step, message, data) {
+  const el = document.getElementById("detailedLog");
+  if (!el) return;
+  let line = `[${_detailedLogNow()}] [${step}] ${message}`;
+  if (data !== undefined && data !== null) {
+    const dataStr = typeof data === "object" ? JSON.stringify(data, null, 2) : String(data);
+    line += "\n  " + dataStr.replace(/\n/g, "\n  ");
+  }
+  el.textContent += line + "\n";
+  el.scrollTop = el.scrollHeight;
+}
+function clearDetailedLog() {
+  const el = document.getElementById("detailedLog");
+  const section = document.getElementById("detailedLogSection");
+  const btn = document.getElementById("detailedLogToggle");
+  if (el) el.textContent = "";
+  if (section) section.setAttribute("data-active", "true");
+  if (btn) {
+    btn.setAttribute("aria-expanded", "true");
+    btn.textContent = "Ukryj logi szczegółowe tłumaczenia";
+  }
+}
+
+(function wireDetailedLogToggle() {
+  const btn = document.getElementById("detailedLogToggle");
+  const pre = document.getElementById("detailedLog");
+  const section = document.getElementById("detailedLogSection");
+  if (btn && pre && section) {
+    btn.addEventListener("click", function () {
+      const isExpanded = section.getAttribute("data-active") === "true";
+      if (isExpanded) {
+        section.removeAttribute("data-active");
+        pre.setAttribute("aria-hidden", "true");
+        btn.textContent = "Pokaż logi szczegółowe tłumaczenia";
+        btn.setAttribute("aria-expanded", "false");
+      } else {
+        section.setAttribute("data-active", "true");
+        pre.removeAttribute("aria-hidden");
+        btn.textContent = "Ukryj logi szczegółowe tłumaczenia";
+        btn.setAttribute("aria-expanded", "true");
+      }
+    });
+  }
+  var runBtn = document.getElementById("runBtn");
+  if (runBtn) runBtn.onclick = runTranslate;
+})();
+
 async function runTranslate() {
   const apiKey = getApiKey();
   if (!apiKey) {
@@ -25,6 +77,9 @@ async function runTranslate() {
   if (!glossaryCache) {
     await refreshGlossaryAll();
   }
+
+  clearDetailedLog();
+  detailedLog("START", "Rozpoczęto tłumaczenie", { sourceLang, skipFilled });
 
   log(`Czytam zaznaczenie... (źródło: ${sourceLang})`);
 
@@ -41,6 +96,13 @@ async function runTranslate() {
     const columnIndex = sel.columnIndex;
 
     const totalCells = rowCount * columnCount;
+    detailedLog("EXCEL_READ", "Odczytano zaznaczenie z arkusza", {
+      rowCount,
+      columnCount,
+      totalCells,
+      rowIndex,
+      columnIndex
+    });
     if (totalCells > 3000) {
       log(`⚠️ Duże zaznaczenie (${totalCells} komórek). Przy błędach spróbuj mniejszego zakresu.`);
     }
@@ -51,9 +113,11 @@ async function runTranslate() {
     await ctx.sync();
 
     const header = (headerRange.values && headerRange.values[0] ? headerRange.values[0] : []).map(h => normalizeHeader(h));
+    detailedLog("HEADER", "Odczytano nagłówki kolumn (języki)", { header });
     const srcColInSel = header.indexOf(sourceLang);
     if (srcColInSel < 0) {
       log(`BŁĄD: brak kolumny ${sourceLang} w wierszu nagłówków (1).`);
+      detailedLog("ERROR", "Brak kolumny źródłowej w nagłówkach", { sourceLang, header });
       return;
     }
     const srcCol = columnIndex + srcColInSel;
@@ -75,7 +139,14 @@ async function runTranslate() {
       let done = false;
       while (!done && chunkRows >= 1) {
         try {
-          if (totalChunks > 1) log(`  Czytam partię ${chunkNum + 1}...`);
+          if (totalChunks > 1) {
+            log(`  Czytam partię ${chunkNum + 1}...`);
+            detailedLog("CHUNK_READ", `Partia odczytu ${chunkNum + 1}/${totalChunks}`, {
+              chunkRows,
+              rowOffset,
+              cellsInChunk: chunkRows * columnCount
+            });
+          }
           const chunkSel = sheet.getRangeByIndexes(rowIndex + rowOffset, columnIndex, chunkRows, columnCount);
           const chunkSrc = sheet.getRangeByIndexes(rowIndex + rowOffset, srcCol, chunkRows, 1);
           chunkSel.load("values");
@@ -125,8 +196,13 @@ async function runTranslate() {
     let total = 0;
     for (const arr of groups.values()) total += arr.length;
 
+    const byLang = {};
+    for (const [k, arr] of groups.entries()) byLang[k] = arr.length;
+    detailedLog("GROUPS", "Przygotowano dane do tłumaczenia (grupy po językach)", { total, byLang });
+
     if (total === 0) {
       log("Brak danych do tłumaczenia.");
+      detailedLog("DONE", "Brak danych do tłumaczenia – zakończono");
       return;
     }
 
@@ -144,6 +220,12 @@ async function runTranslate() {
 
         const { tokenizedLines, tokenMap } =
           applyGlossaryTokens(lines, lang, currentGlossary);
+
+        detailedLog("API_REQUEST", `Wysyłka do OpenAI (${sourceLang} → ${lang})`, {
+          batchIndex: Math.floor(i / batchSize) + 1,
+          lineCount: tokenizedLines.length,
+          preview: tokenizedLines.slice(0, 3)
+        });
 
         const is429 = (e) => (e && (e.message || "" + e) && /429|rate limit|Too Many Requests/i.test(e.message || "" + e));
         let translatedLines;
@@ -164,6 +246,11 @@ async function runTranslate() {
         if (!Array.isArray(translatedLines)) translatedLines = [];
         while (translatedLines.length < batch.length) translatedLines.push("");
         translatedLines = translatedLines.slice(0, batch.length);
+
+        detailedLog("API_RESPONSE", "Odpowiedź z OpenAI", {
+          lineCount: translatedLines.length,
+          preview: translatedLines.slice(0, 3)
+        });
 
         if (API_DELAY_MS > 0) {
           await new Promise(r => setTimeout(r, API_DELAY_MS));
@@ -198,6 +285,10 @@ async function runTranslate() {
         }
         if (needRetry.length > 0) {
           log(`  Uwaga: ${needRetry.length} komórek nadal niepoprawnych po ${MAX_RETRY_PER_CELL} próbach – zapisuję ostatni wynik.`);
+          detailedLog("RETRY", "Część komórek uzupełniona ponownym wywołaniem API", {
+            stillInvalid: needRetry.length,
+            maxRetries: MAX_RETRY_PER_CELL
+          });
         }
 
         // Zapis do Excela po paczce; przy 500 – ponowna próba po 1 komórce
@@ -209,6 +300,11 @@ async function runTranslate() {
             cellRange.values = [[restored]];
           }
         };
+        detailedLog("EXCEL_WRITE", "Zapis do arkusza (partia komórek)", {
+          cellsWritten: batch.length,
+          done: done + batch.length,
+          total
+        });
         try {
           writeBatch();
           await ctx.sync();
@@ -234,10 +330,12 @@ async function runTranslate() {
 
     setProgress(null);
     log("Gotowe.");
+    detailedLog("DONE", "Tłumaczenie zakończone pomyślnie", { total });
   });
   } catch (err) {
     setProgress(null);
     const msg = (err && (err.message || err.code || err.toString())) || "";
+    detailedLog("ERROR", "Wystąpił błąd", { message: msg });
     const isServerError = /500|Internal|RichApi\.Error|błąd wewnętrzny/i.test(msg);
     if (isServerError) {
       log("⚠️ Excel Online zwrócił błąd (500). Spróbuj mniejszego zaznaczenia (np. do 500–1000 komórek) lub podziel arkusz na mniejsze fragmenty. Jeśli błąd pojawia się od razu – zaznacz mniejszy zakres.");
