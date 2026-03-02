@@ -268,19 +268,32 @@ function restoreGlossaryTokens(text, tokenMap) {
 
 // ======================== WYWOŁANIE OPENAI API ========================
 
+var LANG_NAMES = {
+  EN: "English", PL: "Polish", DE: "German", FR: "French", ES: "Spanish",
+  IT: "Italian", RO: "Romanian", RU: "Russian", UA: "Ukrainian", CS: "Czech",
+  SE: "Swedish", NL: "Dutch", DK: "Danish", PT: "Portuguese", HU: "Hungarian",
+  BG: "Bulgarian", HR: "Croatian", SK: "Slovak", SL: "Slovenian", FI: "Finnish",
+  NO: "Norwegian", EL: "Greek", TR: "Turkish", JA: "Japanese", ZH: "Chinese",
+  KO: "Korean", AR: "Arabic", HE: "Hebrew", TH: "Thai", VI: "Vietnamese"
+};
+
 async function callOpenAI(targetLang, tokenizedLines, sourceLang) {
   sourceLang = sourceLang || "EN";
 
+  var srcName = LANG_NAMES[sourceLang] || sourceLang;
+  var tgtName = LANG_NAMES[targetLang] || targetLang;
+
   var systemPrompt =
-    "You are translating product names from " +
-    (sourceLang === "PL" ? "Polish" : "English") +
-    ". Keep meaning 1:1. Preserve brands, model codes, numbers, units, punctuation, and casing. " +
-    "Do not add marketing words. Do not paraphrase. Return one translation per line in the same order. " +
-    "Output only translations. Do NOT translate or alter tokens like [[G1]], [[G2]]; keep them exactly.";
+    "You are a professional translator for industrial/gastronomic equipment parts. " +
+    "Translate product names and technical terms from " + srcName + " to " + tgtName + ". " +
+    "ALWAYS translate technical terms to the target language (e.g. 'microswitch' → 'microîntrerupător' in Romanian). " +
+    "Preserve brand names (e.g. Robot Coupe, Bosch), model codes, part numbers, units, and casing. " +
+    "Do not add extra words or paraphrase. Return one translation per line in the same order. " +
+    "Output only translations, nothing else. " +
+    "Do NOT translate or alter tokens like [[G1]], [[G2]]; keep them exactly as they are.";
 
   var userPrompt =
-    "Translate from " + sourceLang + " to " + targetLang +
-    "\nTexts (one per line):\n" + tokenizedLines.join("\n");
+    "Translate from " + srcName + " to " + tgtName + ":\n" + tokenizedLines.join("\n");
 
   var requestBody = {
     model: OPENAI_MODEL,
