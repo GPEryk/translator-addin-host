@@ -282,30 +282,35 @@ body{
   box-shadow:0 0 8px rgba(0,113,227,0.4);
 }
 
-/* Logi szczegółowe tłumaczenia */
+/* Konsola logów – zawsze widoczna */
 .detailed-log-section{
   margin-top:12px;
   border-top:1px solid var(--border);
   padding-top:12px;
 }
-.detailed-log-toggle{
-  font-size:12px;
-  padding:6px 10px;
+.detailed-log-title{
+  font-size:13px;
+  font-weight:600;
+  color:var(--text);
   margin-bottom:8px;
+  letter-spacing:-0.01em;
 }
 .detailed-log{
+  display:block;
   background:#0e1016;
   color:#e6edf3;
   border:1px solid var(--border);
   border-radius:12px;
   padding:12px;
-  max-height:280px;
+  min-height:200px;
+  max-height:320px;
   overflow:auto;
   font-size:12px;
   white-space:pre-wrap;
   font-family:'SF Mono','Menlo','Monaco','Courier New',monospace;
   line-height:1.5;
 }
-.detailed-log-section .detailed-log{ display:none; }
-.detailed-log-section[data-active="true"] .detailed-log{ display:block; }
-.detailed-log-section[data-active="true"] .detailed-log-toggle{ margin-bottom:8px; }
+.detailed-log:empty::before{
+  content:"Logi pojawią się tutaj po uruchomieniu tłumaczenia.";
+  color:var(--muted);
+}
