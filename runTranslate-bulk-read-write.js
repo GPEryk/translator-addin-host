@@ -593,9 +593,7 @@ async function runTranslate() {
 
           var isValid = function (j) {
             var res = (restoredList[j] || "").trim();
-            var srcVal = (batch[j].src || "").trim();
             if (!res) return false;
-            if (lang !== sourceLang && res === srcVal) return false;
             return true;
           };
           var MAX_RETRY_PER_CELL = 5;
