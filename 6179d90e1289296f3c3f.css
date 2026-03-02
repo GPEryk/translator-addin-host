@@ -297,8 +297,8 @@ body{
 }
 .detailed-log{
   display:block;
-  background:#0e1016;
-  color:#e6edf3;
+  background:#ffffff;
+  color:#1d1d1f;
   border:1px solid var(--border);
   border-radius:12px;
   padding:12px;
