@@ -365,21 +365,43 @@ async function runTranslate() {
         log("⚠️ Duże zaznaczenie (" + totalCells + " komórek). Przy błędach spróbuj mniejszego zakresu.");
       }
 
-      detailedLog("EXCEL", "Ładowanie nagłówka (wiersz 1, zaznaczone kolumny)...", { columnIndex: columnIndex, columnCount: columnCount });
-      var headerRange = sheet.getRangeByIndexes(HEADER_ROW - 1, columnIndex, 1, columnCount);
-      headerRange.load("values");
+      // Nagłówki zaznaczonych kolumn (języki docelowe)
+      detailedLog("EXCEL", "Ładowanie nagłówków zaznaczonych kolumn...", { columnIndex: columnIndex, columnCount: columnCount });
+      var selHeaderRange = sheet.getRangeByIndexes(HEADER_ROW - 1, columnIndex, 1, columnCount);
+      selHeaderRange.load("values");
       await ctx.sync();
 
-      var headerRaw = headerRange.values && headerRange.values[0] ? headerRange.values[0] : [];
-      var header = headerRaw.map(function (h) { return normalizeHeader(h); });
-      detailedLog("HEADER", "Odczytano nagłówki kolumn (języki)", { headerRaw: headerRaw, header: header });
+      var selHeaderRaw = selHeaderRange.values && selHeaderRange.values[0] ? selHeaderRange.values[0] : [];
+      var header = selHeaderRaw.map(function (h) { return normalizeHeader(h); });
+      detailedLog("HEADER_SEL", "Nagłówki zaznaczonych kolumn", { selHeaderRaw: selHeaderRaw, header: header });
+
+      // Szukaj kolumny źródłowej (EN/PL) — najpierw w zaznaczeniu, potem w całym wierszu 1
+      var srcCol = -1;
       var srcColInSel = header.indexOf(sourceLang);
-      if (srcColInSel < 0) {
-        log("BŁĄD: brak kolumny " + sourceLang + " w wierszu nagłówków (1).");
-        detailedLog("ERROR", "Brak kolumny źródłowej w nagłówkach", { sourceLang: sourceLang, header: header });
+      if (srcColInSel >= 0) {
+        srcCol = columnIndex + srcColInSel;
+        detailedLog("HEADER", "Kolumna źródłowa znaleziona w zaznaczeniu", { sourceLang: sourceLang, srcCol: srcCol });
+      } else {
+        detailedLog("HEADER", "Kolumna źródłowa nie jest w zaznaczeniu — szukam w całym wierszu 1...", { sourceLang: sourceLang });
+        var usedRange = sheet.getUsedRange();
+        usedRange.load("columnCount");
+        await ctx.sync();
+
+        var fullHeaderRange = sheet.getRangeByIndexes(HEADER_ROW - 1, 0, 1, usedRange.columnCount);
+        fullHeaderRange.load("values");
+        await ctx.sync();
+
+        var fullHeaderRaw = fullHeaderRange.values && fullHeaderRange.values[0] ? fullHeaderRange.values[0] : [];
+        var fullHeader = fullHeaderRaw.map(function (h) { return normalizeHeader(h); });
+        srcCol = fullHeader.indexOf(sourceLang);
+        detailedLog("HEADER_FULL", "Przeszukano cały wiersz 1", { fullHeader: fullHeader, srcCol: srcCol });
+      }
+
+      if (srcCol < 0) {
+        log("BŁĄD: brak kolumny " + sourceLang + " w wierszu nagłówków (1). Sprawdź czy arkusz ma nagłówek " + sourceLang + ".");
+        detailedLog("ERROR", "Brak kolumny źródłowej w całym wierszu 1", { sourceLang: sourceLang, header: header });
         return;
       }
-      var srcCol = columnIndex + srcColInSel;
 
       var currentGlossary = sourceLang === "PL" ? plGlossaryCache : glossaryCache;
 
